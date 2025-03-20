@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tony大叔粉丝头像献礼</title>
+    <!-- 引入 OpenLayers 库的 CSS 文件 -->
+    <link rel="stylesheet" href="ol.css" type="text/css">
+    <!-- 引入 OpenLayers 库的 JavaScript 文件 -->
+    <script src="ol.js"></script>
+    <style>
+        body {
+            margin: 0;
+        }
+
+        /* 设置地图容器的样式 */
+        #map {
+            width: 100%;
+            height: 100vh;
+        }
+
+        .search-box {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 1000;
+            background: rgba(255,255,255,0.9);
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        #results {
+            display: none;
+            margin-top: 10px;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        #locations {
+            display: flex;
+            flex-direction: column;
+        }
+        .location-btn {
+            width: 100%;
+            padding: 8px 12px;
+            margin: 4px 0;
+            border: none;
+            background: #f8f8f8;
+            border-radius: 4px;
+            cursor: pointer;
+            text-align: left;
+            transition: background 0.2s;
+            color: #007bff;
+        }
+        .location-btn:hover {
+            background: #e0e0e0;
+        }
+        .loading-indicator {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0,0,0,0.8);
+            color: white;
+            padding: 12px 24px;
+            border-radius: 25px;
+            font-size: 14px;
+            display: none;
+        }
+        input[type="text"] {
+            width: 200px;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            margin-right: 8px;
+        }
+        button {
+            padding: 8px 16px;
+            background: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        .bili-avatar {
+            vertical-align: middle;
+            border-radius: 50%;
+            display: inline-block;
+            width: 32px;
+            height: 32px;
+        }
+        /* 版权信息样式 */
+        .copyright {
+            position: fixed; /* 固定在底部 */
+            bottom: 10px; /* 距离底部 10px */
+            left: 50%; /* 水平居中 */
+            transform: translateX(-50%); /* 调整居中偏移 */
+            font-size: 12px; /* 字体大小 */
+            color: #fff; /* 字体颜色和透明度 */
+            text-align: center; /* 文字居中 */
+            z-index: 1000; /* 确保在最上层 */
+            opacity: 0.3;
+        }
+        a:visited {
+            color: #fff;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="search-box">
+        <a href="https://space.bilibili.com/351085345" target="_blank"><img class="bili-avatar" src="avatar.jpg" /></a>
+
+        <input type="text" id="searchInput" value="" placeholder="输入粉丝名称搜索">
+        <button id="searchButton">搜索</button>
+        <div id="results">
+            <div id="locations"></div>
+        </div>
+    </div>
+    <div id="map"></div>
+    <div class="copyright">Program designed by <a href="https://space.bilibili.com/12">MagicBear</a>, <a href="https://github.com/magicbear/avatar_mosaic">Get the source</a></div>
+
+    <script>
+        var map;
+        var geoMarker;
+        var geoMarkerLayer;
+
+        window.addEventListener("load", async () => {
+            const response = await fetch(`/config`);
+            const config = await response.json();
+            // 创建一个自定义的 tileUrlFunction
+            const customTileUrlFunction = function (tileCoord) {
+                const z = tileCoord[0];
+                const x = tileCoord[1];
+                const y = tileCoord[2]; // OpenLayers 的 y 坐标是负数，需要转换
+
+                if (z >= config.max_zoom)
+                    return "";
+
+                const maxX = config.max_coods[z][0];
+                const maxY = config.max_coods[z][1];
+
+                // 检查 x 和 y 坐标是否超出上限
+                if (x >= maxX || y >= maxY) {
+                    return ""; // 如果超出上限，返回 null 表示不加载该切片
+                }
+
+                return `/tile/${z}_${x}_${y}`;
+            };
+
+            // 创建 ImageTile 切片源
+            const tileSource = new ol.source.TileImage({
+                tileUrlFunction: customTileUrlFunction,
+                tileSize: config.tileSize,
+                maxZoom: config.max_zoom - 1
+            });
+
+            geoMarkerLayer = new ol.source.Vector({
+              features: [],
+            });
+
+            var vectorLayer = new ol.layer.Vector({
+              source: geoMarkerLayer,
+              style: function (feature) {
+                // hide geoMarker if animation is active
+                // if (animating && feature.get("type") === "geoMarker") {
+                //   return null;
+                // }
+                return styles[feature.get("type")];
+              },
+            });
+
+            // 切片坐标转投影坐标范围
+            function tileExtentToProjExtent(tileExtent) {
+                const [minZ, minX, minY, maxZ, maxX, maxY] = tileExtent;
+                const nMin = Math.pow(2, minZ);
+                const nMax = Math.pow(2, maxZ);
+
+                // 计算最小切片的归一化坐标
+                const xNormalizedMin = minX / nMin;
+                const yNormalizedMin = minY / nMin;
+
+                // 计算最大切片的归一化坐标
+                const xNormalizedMax = (maxX + 1) / nMax;
+                const yNormalizedMax = (maxY + 1) / nMax;
+
+                // 计算经度范围
+                const lonMin = xNormalizedMin * 360 - 180;
+                const lonMax = xNormalizedMax * 360 - 180;
+
+                // 计算纬度范围
+                const latRadMin = Math.atan(Math.sinh(Math.PI * (1 - 2 * yNormalizedMin)));
+                const latMin = latRadMin * (180 / Math.PI);
+                const latRadMax = Math.atan(Math.sinh(Math.PI * (1 - 2 * yNormalizedMax)));
+                const latMax = latRadMax * (180 / Math.PI);
+
+                // 将经纬度范围转换为 Web Mercator 投影坐标范围
+                const projMin = ol.proj.fromLonLat([lonMin, latMin]);
+                const projMax = ol.proj.fromLonLat([lonMax, latMax]);
+
+                return [projMin[0], projMin[1], projMax[0], projMax[1]];
+            }
+
+            // limitExtent = [0, -config.origX / config.tileSize, 0, config.max_zoom - 1, config.origX / config.tileSize, config.origY / 2 / config.tileSize];
+            //
+            // limit_extent = tileExtentToProjExtent(limitExtent);
+            // console.log(limitExtent, limit_extent)
+            // 初始化地图
+            map = new ol.Map({
+                target: 'map',
+                layers: [
+                    new ol.layer.Tile({
+                        source: tileSource
+                    }),
+                    vectorLayer
+                ],
+                view: new ol.View({
+                    // 初始中心位置
+                    center: ol.proj.fromLonLat([0, 0]),
+                    // 初始缩放级别
+                    zoom: 0,
+                    minZoom: 0,
+                    maxZoom: config.max_zoom + 3,
+                    // extent: limit_extent
+                })
+            });
+
+            // 获取输入框、搜索按钮和结果选择下拉框的 DOM 元素
+            const searchInput = document.getElementById('searchInput');
+            const searchButton = document.getElementById('searchButton');
+
+            function startLocate(coord) {
+                const x = coord.x;
+                const y = coord.y;
+                // 缓慢放大到目标位置
+                const view = map.getView();
+                const duration = 2000; // 动画持续时间，单位为毫秒
+                const startZoom = view.getZoom();
+                const endZoom = config.max_zoom - 1; // 最终缩放级别
+
+                // 计算该缩放级别下的总切片数量
+                const n = Math.pow(2, endZoom);
+
+                // 计算归一化坐标
+                const xNormalized = (coord.x + 12) / config.tileSize / n;
+                const yNormalized = (coord.y + 12) / config.tileSize / n;
+
+                // 计算经度
+                const lon = xNormalized * 360 - 180;
+
+                // 计算纬度
+                const latRad = Math.atan(Math.sinh(Math.PI * (1 - 2 * yNormalized)));
+                const lat = latRad * (180 / Math.PI);
+
+                if (geoMarker !== undefined){
+                    geoMarkerLayer.removeFeature(geoMarker);
+                }
+                geoMarker = new ol.Feature({
+                  type: 'geoMarker',
+                  geometry: new ol.geom.Point(ol.proj.fromLonLat([lon, lat]))
+                });
+
+                geoMarker.setStyle(new ol.style.Style({
+                    image: new ol.style.Circle({
+                      radius: 70,
+                      snapToPixel: false,
+                      // fill: new ol.style.Fill({ color: "black" }),
+                      stroke: new ol.style.Stroke({
+                        color: "white",
+                        width: 2,
+                      }),
+                    }),
+                  }));
+                geoMarkerLayer.addFeature(geoMarker);
+
+                view.animate({
+                    center: ol.proj.fromLonLat([lon, lat]),
+                    zoom: endZoom,
+                    duration: duration
+                });
+            }
+            // 显示搜索结果
+            function displayResults(data) {
+                const locationsDiv = document.getElementById('locations');
+                locationsDiv.innerHTML = '';
+
+                data.forEach((coord, index) => {
+                    const btn = document.createElement('button');
+                    btn.className = 'location-btn';
+                    btn.innerHTML = `
+                        <span style="font-weight:bold">位置 ${index + 1}</span><br>
+                        <span style="font-size:0.8em;color:#666">
+                            X: ${coord.x}px / Y: ${coord.y}px
+                        </span>
+                    `;
+                    btn.onclick = () => startLocate(coord);
+                    locationsDiv.appendChild(btn);
+                });
+
+                document.getElementById('results').style.display = 'block';
+            }
+
+            // 为搜索按钮添加点击事件监听器
+            searchButton.addEventListener('click', async () => {
+                const locationsDiv = document.getElementById('locations');
+                locationsDiv.innerHTML = '';
+                const name = searchInput.value.trim();
+                if (name) {
+                    try {
+                        // 向服务器发送搜索请求
+                        const response = await fetch(`/search?name=${name}`);
+                        const results = await response.json();
+                        displayResults(results);
+                    } catch (error) {
+                        console.error('搜索出错:', error);
+                        alert('搜索出错，请稍后重试');
+                    }
+                }
+            });
+        });
+    </script>
+</body>
+
+</html>
